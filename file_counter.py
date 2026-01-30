@@ -5,9 +5,18 @@
 
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
 import math
+
+# Windows 控制台可能是 GBK，主动切到 UTF-8 以避免中文路径报错
+if os.name == "nt":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 try:
     import openpyxl
@@ -28,6 +37,9 @@ except ImportError:
 A4_WIDTH_MM = 210
 A4_HEIGHT_MM = 297
 A4_AREA_MM2 = A4_WIDTH_MM * A4_HEIGHT_MM
+
+# 版本信息
+VERSION = "2026.01.30.1"
 
 
 def get_file_size(size_bytes):
@@ -70,7 +82,10 @@ def get_pdf_a4_pages(file_path):
                 page_area = page_width * page_height
 
                 # 换算成A4页数（面积比）
+                # 小于A4的页面按1页A4计
                 page_ratio = page_area / A4_AREA_MM2
+                if page_ratio < 1:
+                    page_ratio = 1
                 a4_pages += page_ratio
 
             return total_pages, round(a4_pages, 2)
@@ -124,7 +139,7 @@ def scan_directory(directory):
                 size_readable, size_kb = get_file_size(size_bytes)
 
                 info = {
-                    'path': str(file_path.as_posix()),  # 使用正斜杠，跨平台兼容
+                    'path': str(file_path),
                     'filename': filename,
                     'type': ext.upper().replace('.', ''),
                     'size_readable': size_readable,
@@ -214,7 +229,7 @@ def create_excel_report(file_info_list, output_path):
         stats[file_type]['count'] += 1
         stats[file_type]['size'] += f['size_bytes']
         # 统计A4换算页数
-        stats[file_type]['pages'] += f.get('a4_pages', f.get('page_count', 0))
+        stats[file_type]['pages'] += f.get('page_count') or 0
         stats[file_type]['points'] += f['points']
 
     # 写入统计信息
@@ -262,9 +277,9 @@ def create_excel_report(file_info_list, output_path):
     ws.cell(row=total_row, column=3).alignment = number_alignment
     ws.cell(row=total_row, column=3).font = Font(bold=True)
 
-    # 总A4页数
-    total_a4_pages = sum(s.get('pages', 0) for s in stats.values())
-    ws.cell(row=total_row, column=4, value=total_a4_pages).border = border
+    # 总页数：汇总各类型页数
+    total_pages = sum(s.get('pages', 0) for s in stats.values())
+    ws.cell(row=total_row, column=4, value=total_pages).border = border
     ws.cell(row=total_row, column=4).alignment = number_alignment
     ws.cell(row=total_row, column=4).font = Font(bold=True)
 
@@ -283,26 +298,29 @@ def create_excel_report(file_info_list, output_path):
     wb.save(output_path)
     print(f"报告已生成: {output_path}")
 
-    # 自动打开Excel文件
-    import subprocess
-    import platform
-    try:
-        if platform.system() == 'Darwin':  # macOS
-            subprocess.run(['open', output_path])
-        elif platform.system() == 'Windows':
-            os.startfile(output_path)
-        else:  # Linux
-            subprocess.run(['xdg-open', output_path])
-    except Exception as e:
-        print(f"无法自动打开文件: {e}")
+    # 自动打开Excel文件（允许通过环境变量关闭自动打开）
+    if os.environ.get("FILE_COUNTER_NO_OPEN") != "1":
+        import subprocess
+        import platform
+        try:
+            if platform.system() == 'Darwin':  # macOS
+                subprocess.run(['open', output_path])
+            elif platform.system() == 'Windows':
+                os.startfile(output_path)
+            else:  # Linux
+                subprocess.run(['xdg-open', output_path])
+        except Exception as e:
+            print(f"无法自动打开文件: {e}")
 
 
 def main():
-    # 获取输入目录，默认当前目录
+    # 获取输入目录
     if len(sys.argv) > 1:
         target_dir = sys.argv[1]
     else:
-        target_dir = "."
+        target_dir = input("请输入要统计的目录路径（留空统计当前目录）: ").strip()
+        if not target_dir:
+            target_dir = "."
 
     # 检查目录是否存在
     if not os.path.isdir(target_dir):
@@ -319,8 +337,7 @@ def main():
         print("没有找到支持的文件类型")
         return
 
-    # 生成输出文件名（带时间戳）
-    from datetime import datetime
+    # 生成输出文件名
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_name = f"文件统计报告_{timestamp}.xlsx"
     output_path = os.path.join(os.getcwd(), output_name)
